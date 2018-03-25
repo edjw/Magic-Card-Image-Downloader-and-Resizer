@@ -1,101 +1,119 @@
-from string import punctuation
-from os import makedirs
-from os.path import splitext
 from pathlib import Path
-from requests import get
-from bs4 import BeautifulSoup
+from string import punctuation
 from urllib.request import urlretrieve
+from urllib.parse import urlparse
+from os.path import splitext
+from os import remove
+from gooey import Gooey, GooeyParser
+from requests_html import HTMLSession
 from PIL import Image
 
 
-def download__magic_card_images(url):
+@Gooey(
+    program_name="Magic Cards Image Downloader", program_description="Downloads and resizes images"
+)
+def main():
+    parser = GooeyParser()
 
-    res = get(url)
-    webpage_html = BeautifulSoup(res.text, 'html.parser')
-    counter = 0
+    parser.add_argument(
+        "OutputDirectory",
+        help="Select the directory to save images in",
+        widget="DirChooser",
+    )
 
-    # Select all images
-    images = webpage_html.select("img")
+    parser.add_argument(
+        "URL",
+        default="https://magic.wizards.com/en/products/ixalan/cards",
+        help="Web address to download images from",
+    )
 
-    # Dictionary of card name and link
-    card_name_and_link = {}
+    parser.add_argument(
+        "CSS_Selectors",
+        default=".rtecenter > img, .side.front > img",
+        help="CSS selectors for the images",
+    )
 
-    for img in images:
-        # Only the card images have a style attribute
-        if img.has_attr('style'):
-            image_name = img['alt']
-            image_link = img['src']
-            card_name_and_link.update({image_name: image_link})
+    args = parser.parse_args()
 
-    makedirs("magic_card_images", exist_ok=True)
+    WORKING_URL = args.URL
+    OUTPUT_DIRECTORY = Path(args.OutputDirectory)
+    CSS_SELECTORS = args.CSS_Selectors
 
-    print("Downloading images ...")
-    for card in card_name_and_link:
+    def create_directory():
+        Path(OUTPUT_DIRECTORY).mkdir(parents=True, exist_ok=True)
 
-        counter += 1
-        print(str(counter) + " / " + str(len(card_name_and_link)))
-
-        card_image_link = card_name_and_link[card]
-
-        file_name = card_image_link.split('/')[-1]  # eg en_JB0lDoCGgA.png
-        file_format = splitext(file_name)[1]  # eg .png
-
-        card_name = card.lower()
-
+    def cleanup_name(image_name):
+        image_name = image_name.lower()
         remove_punctuation = str.maketrans('', '', punctuation)
-        card_name = card_name.translate(remove_punctuation)
+        image_name = image_name.translate(remove_punctuation)
+        image_name = image_name.replace("’", "")
+        image_name = image_name.replace("  ", "_")
+        image_name = image_name.replace(" ", "_")
+        return image_name
 
-        card_name = card_name.replace("’", "")
-        card_name = card_name.replace("  ", "_")
-        card_name = card_name.replace(" ", "_")
+    def get_file_format(image_url):
+        path = urlparse(image_url).path
+        extension = splitext(path)[1]
+        return extension
 
-        urlretrieve(card_image_link, "magic_card_images/" +
-                    card_name + file_format)
+    def get_image_links():
+        print("Getting image links...\n", flush=True)
+        session = HTMLSession()
+        r = session.get(WORKING_URL)
+        images = r.html.find(CSS_SELECTORS)
+        return images
+
+    def download_images():
+        images = get_image_links()
+        print("Downloading images...\n", flush=True)
+        for image in images:
+            image_name = image.attrs["alt"]
+            image_url = image.attrs["src"]
+
+            image_name = cleanup_name(image_name)
+            image_format = get_file_format(image_url)
+            image_save_name = image_name + image_format
+
+            urlretrieve(image_url, OUTPUT_DIRECTORY / image_save_name)
+
+    def resize_images():
+        print("Resizing images...\n", flush=True)
+        image_formats = [".jpg", ".jpeg", ".gif", ".png", ".tga", ".tiff", ".webp"]
+
+        OUTPUT_DIRECTORY_Path = Path(OUTPUT_DIRECTORY)
+
+        for img_file in OUTPUT_DIRECTORY_Path.glob('*.*'):
+            if img_file.is_file() and img_file.suffix in image_formats:
+                img = Image.open(img_file)
+                longest_dimension = max(img.size)
+
+                if longest_dimension < 500:
+                    size = (longest_dimension, longest_dimension)
+                else:
+                    size = (500, 500)
+
+                img.thumbnail(size, Image.ANTIALIAS)
+                background = Image.new('RGBA', size, (255, 255, 255, 0))
+                background.paste(
+                    img,
+                    (
+                        int((size[0] - img.size[0]) / 2),
+                        int((size[1] - img.size[1]) / 2),
+                    ),
+                )
+
+                resized_image_save_name = str(img_file.stem) + ".png"
+
+                background.save(OUTPUT_DIRECTORY_Path / resized_image_save_name)
+
+                file_format = img_file.suffix
+                if file_format != ".png":
+                    remove(img_file)
+
+    create_directory()
+    download_images()
+    resize_images()
+    print("Finished!\n", flush=True)
 
 
-def resize_images(images_directory):
-
-    counter = 0
-    img_files = []
-
-    p = Path(images_directory)
-
-    for img_file in p.glob('*.*'):
-        if img_file.is_file():
-            img_files.append(img_file.name)
-
-    print("Resizing images...")
-    for img_file in img_files:
-        counter += 1
-        print(str(counter) + " / " + str(len(img_files)))
-
-        # Opening image file
-        image = Image.open(images_directory + img_file)
-
-        # Determining longest side of file
-        longest_dimension = max(image.size)
-
-        # If longest dimension is less than 500px
-        # Make a square of largest side
-        if longest_dimension < 500:
-            size = (longest_dimension, longest_dimension)
-
-        # Otherwise, crop the square to 500px
-        else:
-            size = (500, 500)
-
-        # Makes a transparent background and pastes game image over the centre
-        image.thumbnail(size, Image.ANTIALIAS)
-        background = Image.new('RGBA', size, (255, 255, 255, 0))
-        background.paste(
-            image, (int((size[0] - image.size[0]) / 2),
-                    int((size[1] - image.size[1]) / 2))
-        )
-        background.save(images_directory + img_file)
-
-    print("Finished")
-
-
-download__magic_card_images(
-    "https://magic.wizards.com/en/products/ixalan/cards")
-resize_images("magic_card_images/")
+main()
